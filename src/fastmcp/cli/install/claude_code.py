@@ -1,5 +1,6 @@
 """Claude Code integration for FastMCP install using Cyclopts."""
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -16,21 +17,49 @@ logger = get_logger(__name__)
 
 
 def find_claude_command() -> str | None:
-    """Find the Claude Code CLI command."""
-    # Check the default installation location
-    default_path = Path.home() / ".claude" / "local" / "claude"
-    if default_path.exists():
+    """Find the Claude Code CLI command.
+
+    Checks common installation locations since 'claude' is often a shell alias
+    that doesn't work with subprocess calls.
+    """
+    # First try shutil.which() in case it's a real executable in PATH
+    claude_in_path = shutil.which("claude")
+    if claude_in_path:
         try:
             result = subprocess.run(
-                [str(default_path), "--version"],
+                [claude_in_path, "--version"],
                 check=True,
                 capture_output=True,
                 text=True,
             )
             if "Claude Code" in result.stdout:
-                return str(default_path)
+                return claude_in_path
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
+
+    # Check common installation locations (aliases don't work with subprocess)
+    potential_paths = [
+        # Default Claude Code installation location (after migration)
+        Path.home() / ".claude" / "local" / "claude",
+        # npm global installation on macOS/Linux (default)
+        Path("/usr/local/bin/claude"),
+        # npm global installation with custom prefix
+        Path.home() / ".npm-global" / "bin" / "claude",
+    ]
+
+    for path in potential_paths:
+        if path.exists():
+            try:
+                result = subprocess.run(
+                    [str(path), "--version"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                if "Claude Code" in result.stdout:
+                    return str(path)
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
 
     return None
 
@@ -48,6 +77,9 @@ def install_claude_code(
     with_editable: Path | None = None,
     with_packages: list[str] | None = None,
     env_vars: dict[str, str] | None = None,
+    python_version: str | None = None,
+    with_requirements: Path | None = None,
+    project: Path | None = None,
 ) -> bool:
     """Install FastMCP server in Claude Code.
 
@@ -58,6 +90,9 @@ def install_claude_code(
         with_editable: Optional directory to install in editable mode
         with_packages: Optional list of additional packages to install
         env_vars: Optional dictionary of environment variables
+        python_version: Optional Python version to use
+        with_requirements: Optional requirements file to install from
+        project: Optional project directory to run within
 
     Returns:
         True if installation was successful, False otherwise
@@ -74,6 +109,14 @@ def install_claude_code(
     # Build uv run command
     args = ["run"]
 
+    # Add Python version if specified
+    if python_version:
+        args.extend(["--python", python_version])
+
+    # Add project if specified
+    if project:
+        args.extend(["--project", str(project)])
+
     # Collect all packages in a set to deduplicate
     packages = {"fastmcp"}
     if with_packages:
@@ -85,6 +128,9 @@ def install_claude_code(
 
     if with_editable:
         args.extend(["--with-editable", str(with_editable)])
+
+    if with_requirements:
+        args.extend(["--with-requirements", str(with_requirements)])
 
     # Build server spec from parsed components
     if server_object:
@@ -161,6 +207,27 @@ def claude_code_command(
             help="Load environment variables from .env file",
         ),
     ] = None,
+    python: Annotated[
+        str | None,
+        cyclopts.Parameter(
+            "--python",
+            help="Python version to use (e.g., 3.10, 3.11)",
+        ),
+    ] = None,
+    with_requirements: Annotated[
+        Path | None,
+        cyclopts.Parameter(
+            "--with-requirements",
+            help="Requirements file to install dependencies from",
+        ),
+    ] = None,
+    project: Annotated[
+        Path | None,
+        cyclopts.Parameter(
+            "--project",
+            help="Run the command within the given project directory",
+        ),
+    ] = None,
 ) -> None:
     """Install an MCP server in Claude Code.
 
@@ -178,6 +245,9 @@ def claude_code_command(
         with_editable=with_editable,
         with_packages=packages,
         env_vars=env_dict,
+        python_version=python,
+        with_requirements=with_requirements,
+        project=project,
     )
 
     if success:
